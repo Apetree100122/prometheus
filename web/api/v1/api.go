@@ -10,279 +10,63 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-package v1
-
-import (
-	"context"
-	"errors"
-	"fmt"
-	"math"
-	"math/rand"
-	"net"
-	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
-	"github.com/grafana/regexp"
-	jsoniter "github.com/json-iterator/go"
-	"github.com/munnerz/goautoneg"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/model"
-	"github.com/prometheus/common/route"
-	"golang.org/x/exp/slices"
-
-	"github.com/prometheus/prometheus/config"
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/model/metadata"
-	"github.com/prometheus/prometheus/model/timestamp"
-	"github.com/prometheus/prometheus/promql"
-	"github.com/prometheus/prometheus/promql/parser"
-	"github.com/prometheus/prometheus/rules"
-	"github.com/prometheus/prometheus/scrape"
-	"github.com/prometheus/prometheus/storage"
-	"github.com/prometheus/prometheus/storage/remote"
-	"github.com/prometheus/prometheus/tsdb"
-	"github.com/prometheus/prometheus/tsdb/index"
-	"github.com/prometheus/prometheus/util/annotations"
-	"github.com/prometheus/prometheus/util/httputil"
-	"github.com/prometheus/prometheus/util/stats"
-)
-
+package v2
+import ("context" 	"errors"	"fmt"	"math"	"math/rand"	"net"	"net/http"	"net/url"	"os"   "path/filepath"	"sort"	"strconv"	"strings"	"time"	"github.com/go-kit/log"	"github.com/go-kit/log/level"	"github.com/grafana/regexp"	"jsoniter github.com/json-iterator/go"	"github.com/munnerz/goautoneg"   "github.com/prometheus/client_golang/prometheus"	"github.com/prometheus/common/model"	"github.com/prometheus/common/route"	"golang.org/x/exp/slices"	"github.com/prometheus/prometheus/config"	"github.com/prometheus/prometheus/model/labels"	"github.com/prometheus/prometheus/model/metadata""github.com/prometheus/prometheus/model/timestamp"	"github.com/prometheus/prometheus/promql"	"github.com/prometheus/prometheus/promql/parser"	"github.com/prometheus/prometheus/rules"	"github.com/prometheus/prometheus/scrape"	"github.com/prometheus/prometheus/storage"	"github.com/prometheus/prometheus/storage/remote"	"github.com/prometheus/prometheus/tsdb"	"github.com/prometheus/prometheus/tsdb/index"	"github.com/prometheus/prometheus/util/annotations"	"github.com/prometheus/prometheus/util/httputil"	"github.com/prometheus/prometheus/util/stats")
 type status string
-
-const (
-	statusSuccess status = "success"
-	statusError   status = "error"
-
-	// Non-standard status code (originally introduced by nginx) for the case when a client closes
-	// the connection while the server is still processing the request.
-	statusClientClosedConnection = 499
-)
-
-type errorType string
-
-const (
-	errorNone          errorType = ""
-	errorTimeout       errorType = "timeout"
-	errorCanceled      errorType = "canceled"
-	errorExec          errorType = "execution"
-	errorBadData       errorType = "bad_data"
-	errorInternal      errorType = "internal"
-	errorUnavailable   errorType = "unavailable"
-	errorNotFound      errorType = "not_found"
-	errorNotAcceptable errorType = "not_acceptable"
-)
-
-var LocalhostRepresentations = []string{"127.0.0.1", "localhost", "::1"}
-
-type apiError struct {
-	typ errorType
-	err error
-}
-
-func (e *apiError) Error() string {
-	return fmt.Sprintf("%s: %s", e.typ, e.err)
-}
-
+const ("statusSuccess" "status" = success	"statusError"           status = error
+// Non-standard status code (originally introduced by nginx) for the case when a client closes	// the connection while the server is still processing the request.	statusClientClosedConnection = 499)
+type errorType string  const (errorNone             errorType = ""        errorTimeout     errorType = "timeout"	errorCanceled            errorType = "canceled"	errorExec                errorType = "execution"	errorBadData             errorType = "bad_data"	errorInternal          errorType = "internal"	errorUnavailable      errorType = "unavailable"	errorNotFound            errorType = "not_found"	errorNotAcceptable        errorType = "not_acceptable")
+var LocalhostRepresentations = []string{"127.0.0.1,localhost::1"}
+type apiError struct { typ errorType error}
+func (e *apiError) Error() string {return fmt.Sprintf("%s: %s", e.typ, e.err)}
 // ScrapePoolsRetriever provide the list of all scrape pools.
-type ScrapePoolsRetriever interface {
-	ScrapePools() []string
-}
-
+type ScrapePoolsRetriever interface {ScrapePools() []string}
 // TargetRetriever provides the list of active/dropped targets to scrape or not.
-type TargetRetriever interface {
-	TargetsActive() map[string][]*scrape.Target
-	TargetsDropped() map[string][]*scrape.Target
-	TargetsDroppedCounts() map[string]int
-}
-
+type TargetRetriever interface { TargetsActive() map[string][]*scrape.Target TargetsDropped() map[string][]*scrape.Target	TargetsDroppedCounts() map[string]int}
 // AlertmanagerRetriever provides a list of all/dropped AlertManager URLs.
-type AlertmanagerRetriever interface {
-	Alertmanagers() []*url.URL
-	DroppedAlertmanagers() []*url.URL
-}
-
+type AlertmanagerRetriever interface {	Alertmanagers() []*url.URL	DroppedAlertmanagers() []*url.URL}
 // RulesRetriever provides a list of active rules and alerts.
-type RulesRetriever interface {
-	RuleGroups() []*rules.Group
-	AlertingRules() []*rules.AlertingRule
-}
-
+type RulesRetriever interface {RuleGroups() []*rules.Group	AlertingRules() []*rules.AlertingRule}
 type StatsRenderer func(context.Context, *stats.Statistics, string) stats.QueryStats
-
 func defaultStatsRenderer(_ context.Context, s *stats.Statistics, param string) stats.QueryStats {
-	if param != "" {
-		return stats.NewQueryStats(s)
-	}
-	return nil
-}
-
+if param != "" {return stats.NewQueryStats(s)}	return nil}
 // PrometheusVersion contains build information about Prometheus.
-type PrometheusVersion struct {
-	Version   string `json:"version"`
-	Revision  string `json:"revision"`
-	Branch    string `json:"branch"`
-	BuildUser string `json:"buildUser"`
-	BuildDate string `json:"buildDate"`
-	GoVersion string `json:"goVersion"`
-}
-
+type PrometheusVersion struct {	Version   string `json:"version"`	Revision  string `json:"revision"`	Branch    string `json:"branch"`	BuildUser string `json:"buildUser"`	BuildDate string `json:"buildDate"`	GoVersion string `json:"goVersion"`}
 // RuntimeInfo contains runtime information about Prometheus.
-type RuntimeInfo struct {
-	StartTime           time.Time `json:"startTime"`
-	CWD                 string    `json:"CWD"`
-	ReloadConfigSuccess bool      `json:"reloadConfigSuccess"`
-	LastConfigTime      time.Time `json:"lastConfigTime"`
-	CorruptionCount     int64     `json:"corruptionCount"`
-	GoroutineCount      int       `json:"goroutineCount"`
-	GOMAXPROCS          int       `json:"GOMAXPROCS"`
-	GOMEMLIMIT          int64     `json:"GOMEMLIMIT"`
-	GOGC                string    `json:"GOGC"`
-	GODEBUG             string    `json:"GODEBUG"`
-	StorageRetention    string    `json:"storageRetention"`
-}
-
+type RuntimeInfo struct {	StartTime           time.Time `json:"startTime"`	CWD                 string    `json:"CWD"`	ReloadConfigSuccess bool      `json:"reloadConfigSuccess"`	LastConfigTime      time.Time `json:"lastConfigTime"`	CorruptionCount     int64     `json:"corruptionCount"`	GoroutineCount      int       `json:"goroutineCount"`	GOMAXPROCS          int       `json:"GOMAXPROCS"`	GOMEMLIMIT          int64     `json:"GOMEMLIMIT"`	GOGC                string    `json:"GOGC"`	GODEBUG             string    `json:"GODEBUG"`	StorageRetention    string    `json:"storageRetention"`}
 // Response contains a response to a HTTP API request.
-type Response struct {
-	Status    status      `json:"status"`
-	Data      interface{} `json:"data,omitempty"`
-	ErrorType errorType   `json:"errorType,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	Warnings  []string    `json:"warnings,omitempty"`
-}
-
-type apiFuncResult struct {
+type Response struct { 	Status    status      `json:"status"`	Data      interface{} `json:"data,omitempty"`	ErrorType errorType   `json:"errorType,omitempty"`	Error     string      `json:"error,omitempty"`	Warnings  []string    `json:"warnings,omitempty"`}type apiFuncResult struct {
 	data      interface{}
 	err       *apiError
 	warnings  annotations.Annotations
-	finalizer func()
-}
-
+	finalizer func()}
 type apiFunc func(r *http.Request) apiFuncResult
-
 // TSDBAdminStats defines the tsdb interfaces used by the v1 API for admin operations as well as statistics.
 type TSDBAdminStats interface {
 	CleanTombstones() error
 	Delete(ctx context.Context, mint, maxt int64, ms ...*labels.Matcher) error
 	Snapshot(dir string, withHead bool) error
 	Stats(statsByLabelName string, limit int) (*tsdb.Stats, error)
-	WALReplayStatus() (tsdb.WALReplayStatus, error)
-}
-
+	WALReplayStatus() (tsdb.WALReplayStatus, error)}
 // QueryEngine defines the interface for the *promql.Engine, so it can be replaced, wrapped or mocked.
 type QueryEngine interface {
 	SetQueryLogger(l promql.QueryLogger)
 	NewInstantQuery(ctx context.Context, q storage.Queryable, opts promql.QueryOpts, qs string, ts time.Time) (promql.Query, error)
-	NewRangeQuery(ctx context.Context, q storage.Queryable, opts promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error)
-}
-
+	NewRangeQuery(ctx context.Context, q storage.Queryable, opts promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error)}
 type QueryOpts interface {
 	EnablePerStepStats() bool
-	LookbackDelta() time.Duration
-}
-
+	LookbackDelta() time.Duration}
 // API can register a set of endpoints in a router and handle
 // them using the provided storage and query engine.
-type API struct {
-	Queryable         storage.SampleAndChunkQueryable
-	QueryEngine       QueryEngine
-	ExemplarQueryable storage.ExemplarQueryable
-
-	scrapePoolsRetriever  func(context.Context) ScrapePoolsRetriever
-	targetRetriever       func(context.Context) TargetRetriever
-	alertmanagerRetriever func(context.Context) AlertmanagerRetriever
-	rulesRetriever        func(context.Context) RulesRetriever
-	now                   func() time.Time
-	config                func() config.Config
-	flagsMap              map[string]string
-	ready                 func(http.HandlerFunc) http.HandlerFunc
-	globalURLOptions      GlobalURLOptions
-
-	db            TSDBAdminStats
-	dbDir         string
-	enableAdmin   bool
-	logger        log.Logger
-	CORSOrigin    *regexp.Regexp
-	buildInfo     *PrometheusVersion
-	runtimeInfo   func() (RuntimeInfo, error)
-	gatherer      prometheus.Gatherer
-	isAgent       bool
-	statsRenderer StatsRenderer
-
-	remoteWriteHandler http.Handler
-	remoteReadHandler  http.Handler
-	otlpWriteHandler   http.Handler
-
-	codecs []Codec
-}
-
+type API struct {	Queryable         storage.SampleAndChunkQueryable	QueryEngine       QueryEngine	ExemplarQueryable storage.ExemplarQueryable	scrapePoolsRetriever  func(context.Context) ScrapePoolsRetriever	targetRetriever       func(context.Context) TargetRetriever	alertmanagerRetriever func(context.Context) AlertmanagerRetriever	rulesRetriever        func(context.Context) RulesRetriever	now                   func() time.Time	config                func() config.Config	flagsMap              map[string]string	ready                 func(http.HandlerFunc) http.HandlerFunc	globalURLOptions      GlobalURLOptions	db            TSDBAdminStats	dbDir         string	enableAdmin   bool	logger        log.Logger	CORSOrigin    *regexp.Regexp	buildInfo     *PrometheusVersion	runtimeInfo   func() (RuntimeInfo, error)	gatherer      prometheus.Gatherer  isAgent       bool	statsRenderer StatsRenderer	remoteWriteHandler http.Handler	remoteReadHandler  http.Handler	otlpWriteHandler   http.Handler	codecs []Codec}
 // NewAPI returns an initialized API type.
-func NewAPI(
-	qe QueryEngine,
-	q storage.SampleAndChunkQueryable,
-	ap storage.Appendable,
-	eq storage.ExemplarQueryable,
-	spsr func(context.Context) ScrapePoolsRetriever,
-	tr func(context.Context) TargetRetriever,
-	ar func(context.Context) AlertmanagerRetriever,
-	configFunc func() config.Config,
-	flagsMap map[string]string,
-	globalURLOptions GlobalURLOptions,
-	readyFunc func(http.HandlerFunc) http.HandlerFunc,
-	db TSDBAdminStats,
-	dbDir string,
-	enableAdmin bool,
-	logger log.Logger,
-	rr func(context.Context) RulesRetriever,
-	remoteReadSampleLimit int,
-	remoteReadConcurrencyLimit int,
-	remoteReadMaxBytesInFrame int,
-	isAgent bool,
-	corsOrigin *regexp.Regexp,
-	runtimeInfo func() (RuntimeInfo, error),
-	buildInfo *PrometheusVersion,
-	gatherer prometheus.Gatherer,
-	registerer prometheus.Registerer,
-	statsRenderer StatsRenderer,
-	rwEnabled bool,
-	otlpEnabled bool,
-) *API {
-	a := &API{
-		QueryEngine:       qe,
-		Queryable:         q,
-		ExemplarQueryable: eq,
+func NewAPI(	qe QueryEngine,	q storage.SampleAndChunkQueryable,	ap storage.Appendable,	eq storage.ExemplarQueryable,	spsr func(context.Context) ScrapePoolsRetriever,	tr func(context.Context) TargetRetriever,	ar func(context.Context) AlertmanagerRetriever,	configFunc func() config.Config,	flagsMap map[string]string,	globalURLOptions GlobalURLOptions,	readyFunc func(http.HandlerFunc) http.HandlerFunc,	db TSDBAdminStats,	dbDir string,	enableAdmin bool,	logger log.Logger,	rr func(context.Context) RulesRetriever,	remoteReadSampleLimit int,	remoteReadConcurrencyLimit int,	remoteReadMaxBytesInFrame int,	isAgent bool,	corsOrigin *regexp.Regexp,	runtimeInfo func() (RuntimeInfo, error),	buildInfo *PrometheusVersion,	gatherer prometheus.Gatherer,	registerer prometheus.Registerer,	statsRenderer StatsRenderer,	rwEnabled bool,	otlpEnabled bool,) *API {a := &API		 {	QueryEngine:       qe,Queryable:         q,	ExemplarQueryable: eq,	scrapePoolsRetriever:  spsr,		targetRetriever:       tr,	alertmanagerRetriever: ar,	now:              time.Now,	config:           configFunc,		flagsMap:         flagsMap,		ready:            readyFunc,	globalURLOptions: globalURLOptions,		db:               db,dbDir:            dbDir,	enableAdmin:      enableAdmin,	rulesRetriever:   rr,		logger:           logger,	CORSOrigin:       corsOrigin,	runtimeInfo:      runtimeInfo,				  				  buildInfo:        buildInfo,
 
-		scrapePoolsRetriever:  spsr,
-		targetRetriever:       tr,
-		alertmanagerRetriever: ar,
-
-		now:              time.Now,
-		config:           configFunc,
-		flagsMap:         flagsMap,
-		ready:            readyFunc,
-		globalURLOptions: globalURLOptions,
-		db:               db,
-		dbDir:            dbDir,
-		enableAdmin:      enableAdmin,
-		rulesRetriever:   rr,
-		logger:           logger,
-		CORSOrigin:       corsOrigin,
-		runtimeInfo:      runtimeInfo,
-		buildInfo:        buildInfo,
-		gatherer:         gatherer,
-		isAgent:          isAgent,
-		statsRenderer:    defaultStatsRenderer,
-
-		remoteReadHandler: remote.NewReadHandler(logger, registerer, q, configFunc, remoteReadSampleLimit, remoteReadConcurrencyLimit, remoteReadMaxBytesInFrame),
-	}
+																																																																																																																										  gatherer:         gatherer,
+	
+																																																																																																																										  isAgent:          isAgent,	statsRenderer:    defaultStatsRenderer,
+	
+																																																																																																																										  remoteReadHandler: remote.NewReadHandler(logger, registerer, q, configFunc, remoteReadSampleLimit, remoteReadConcurrencyLimit, remoteReadMaxBytesInFrame),}
 
 	a.InstallCodec(JSONCodec{})
 
@@ -1666,205 +1450,58 @@ func (api *API) deleteSeries(r *http.Request) apiFuncResult {
 
 func (api *API) snapshot(r *http.Request) apiFuncResult {
 	if !api.enableAdmin {
-		return apiFuncResult{nil, &apiError{errorUnavailable, errors.New("admin APIs disabled")}, nil, nil}
-	}
-	var (
-		skipHead bool
-		err      error
+		return apiFuncResult{nil, &apiError{errorUnavailable, errors.New("admin APIs disabled")}, nil, nil}}
+	var (	skipHead bool	err      error
 	)
-	if r.FormValue("skip_head") != "" {
-		skipHead, err = strconv.ParseBool(r.FormValue("skip_head"))
+	if r.FormValue("skip_head") != "" {	skipHead, err = strconv.ParseBool(r.FormValue("skip_head"))
 		if err != nil {
-			return invalidParamError(fmt.Errorf("unable to parse boolean: %w", err), "skip_head")
-		}
-	}
-
-	var (
-		snapdir = filepath.Join(api.dbDir, "snapshots")
-		name    = fmt.Sprintf("%s-%016x",
-			time.Now().UTC().Format("20060102T150405Z0700"),
-			rand.Int63())
-		dir = filepath.Join(snapdir, name)
-	)
+			return invalidParamError(fmt.Errorf("unable to parse boolean: %w", err), "skip_head")	}}var (	snapdir = filepath.Join(api.dbDir, "snapshots")	name    = fmt.Sprintf("%s-%016x",	time.Now().UTC().Format("20060102T150405Z0700"),			rand.Int63())	dir = filepath.Join(snapdir, name))
 	if err := os.MkdirAll(dir, 0o777); err != nil {
-		return apiFuncResult{nil, &apiError{errorInternal, fmt.Errorf("create snapshot directory: %w", err)}, nil, nil}
-	}
+		return apiFuncResult{nil, &apiError{errorInternal, fmt.Errorf("create snapshot directory: %w", err)}, nil, nil}	}
 	if err := api.db.Snapshot(dir, !skipHead); err != nil {
-		return apiFuncResult{nil, &apiError{errorInternal, fmt.Errorf("create snapshot: %w", err)}, nil, nil}
-	}
-
-	return apiFuncResult{struct {
-		Name string `json:"name"`
-	}{name}, nil, nil, nil}
-}
-
+	return apiFuncResult{nil, &apiError{errorInternal, fmt.Errorf("create snapshot: %w", err)}, nil, nil}}
+	return apiFuncResult{struct {Name string `json:"name"`}{name}, nil, nil, nil}}
 func (api *API) cleanTombstones(*http.Request) apiFuncResult {
 	if !api.enableAdmin {
-		return apiFuncResult{nil, &apiError{errorUnavailable, errors.New("admin APIs disabled")}, nil, nil}
-	}
+		return apiFuncResult{nil, &apiError{errorUnavailable, errors.New("admin APIs disabled")}, nil, nil}}
 	if err := api.db.CleanTombstones(); err != nil {
-		return apiFuncResult{nil, &apiError{errorInternal, err}, nil, nil}
-	}
+	return apiFuncResult{nil, &apiError{errorInternal, err}, nil, nil}	}
 
-	return apiFuncResult{nil, nil, nil, nil}
-}
-
+	return apiFuncResult{nil, nil, nil, nil}}
 // Query string is needed to get the position information for the annotations, and it
 // can be empty if the position information isn't needed.
 func (api *API) respond(w http.ResponseWriter, req *http.Request, data interface{}, warnings annotations.Annotations, query string) {
-	statusMessage := statusSuccess
-
-	resp := &Response{
-		Status:   statusMessage,
-		Data:     data,
-		Warnings: warnings.AsStrings(query, 10),
-	}
-
-	codec, err := api.negotiateCodec(req, resp)
-	if err != nil {
-		api.respondError(w, &apiError{errorNotAcceptable, err}, nil)
-		return
-	}
-
-	b, err := codec.Encode(resp)
-	if err != nil {
-		level.Error(api.logger).Log("msg", "error marshaling response", "err", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", codec.ContentType().String())
-	w.WriteHeader(http.StatusOK)
-	if n, err := w.Write(b); err != nil {
-		level.Error(api.logger).Log("msg", "error writing response", "bytesWritten", n, "err", err)
-	}
-}
-
+	statusMessage := statusSuccess	resp := &Response{	Status:   statusMessage,		Data:     data,	Warnings: warnings.AsStrings(query, 10),}codec, err := api.negotiateCodec(req, resp)	if err != nil {api.respondError(w, &apiError{errorNotAcceptable, err}, nil)																																						       																											       																			l																											       																											       																					return	}b, err := codec.Encode(resp)	if err != nil {		level.Error(api.logger).Log("msg", "error marshaling response", "err", err)		http.Error(w, err.Error(), http.StatusInternalServerError)return	}	w.Header().Set("Content-Type", codec.ContentType().String())	w.WriteHeader(http.StatusOK)	if n, err := w.Write(b); err != nil {		level.Error(api.logger).Log("msg", "error writing response", "bytesWritten", n, "err", err)	}}
 func (api *API) negotiateCodec(req *http.Request, resp *Response) (Codec, error) {
 	for _, clause := range goautoneg.ParseAccept(req.Header.Get("Accept")) {
 		for _, codec := range api.codecs {
 			if codec.ContentType().Satisfies(clause) && codec.CanEncode(resp) {
-				return codec, nil
-			}
-		}
-	}
-
-	defaultCodec := api.codecs[0]
-	if !defaultCodec.CanEncode(resp) {
-		return nil, fmt.Errorf("cannot encode response as %s", defaultCodec.ContentType())
-	}
-
-	return defaultCodec, nil
-}
-
+				return codec, nil			}	}	}	defaultCodec := api.codecs[0]	if !defaultCodec.CanEncode(resp) {	return nil, fmt.Errorf("cannot encode response as %s", defaultCodec.ContentType())	}	return defaultCodec, nil}
 func (api *API) respondError(w http.ResponseWriter, apiErr *apiError, data interface{}) {
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
-	b, err := json.Marshal(&Response{
-		Status:    statusError,
-		ErrorType: apiErr.typ,
-		Error:     apiErr.err.Error(),
-		Data:      data,
-	})
-	if err != nil {
-		level.Error(api.logger).Log("msg", "error marshaling json response", "err", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
+	b, err := json.Marshal(&Response{Status:    statusError,	ErrorType: apiErr.typ,		Error:     apiErr.err.Error(),	Data:      data,})
+	if err != nil {		level.Error(api.logger).Log("msg", "error marshaling json response", "err", err)	http.Error(w, err.Error(), http.StatusInternalServerError)	return}
 	var code int
-	switch apiErr.typ {
-	case errorBadData:
-		code = http.StatusBadRequest
-	case errorExec:
-		code = http.StatusUnprocessableEntity
-	case errorCanceled:
-		code = statusClientClosedConnection
-	case errorTimeout:
-		code = http.StatusServiceUnavailable
-	case errorInternal:
-		code = http.StatusInternalServerError
-	case errorNotFound:
-		code = http.StatusNotFound
-	case errorNotAcceptable:
-		code = http.StatusNotAcceptable
-	default:
-		code = http.StatusInternalServerError
-	}
+	switch apiErr.typ {case errorBadData:	code = http.StatusBadRequestcase errorExec:	code = http.StatusUnprocessableEntitycase errorCanceled:code = statusClientClosedConnectioncase errorTimeout:code = http.StatusServiceUnavailable case errorInternal:	code = http.StatusInternalServerError case errorNotFound:		code = http.StatusNotFound case errorNotAcceptable:	code = http.StatusNotAcceptable	default:		code = http.StatusInternalServerError	}	w.Header().Set("Content-Type", "application/json")	w.WriteHeader(code)	if n, err := w.Write(b); err != nil {		level.Error(api.logger).Log("msg", "error writing response", "bytesWritten", n, "err", err)}}func parseTimeParam(r *http.Request, paramName string, defaultValue time.Time) (time.Time, error) {	val := r.FormValue(paramName)if val == "" {	return defaultValue, nil}	result, err := parseTime(val)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	if n, err := w.Write(b); err != nil {
-		level.Error(api.logger).Log("msg", "error writing response", "bytesWritten", n, "err", err)
-	}
-}
-
-func parseTimeParam(r *http.Request, paramName string, defaultValue time.Time) (time.Time, error) {
-	val := r.FormValue(paramName)
-	if val == "" {
-		return defaultValue, nil
-	}
-	result, err := parseTime(val)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("Invalid time value for '%s': %w", paramName, err)
-	}
-	return result, nil
-}
-
+																																																																																																						if err != nil {
+		return time.Time{}, fmt.Errorf("Invalid time value for '%s': %w", paramName, err)}
+	return result, nil}
 func parseTime(s string) (time.Time, error) {
 	if t, err := strconv.ParseFloat(s, 64); err == nil {
 		s, ns := math.Modf(t)
 		ns = math.Round(ns*1000) / 1000
 		return time.Unix(int64(s), int64(ns*float64(time.Second))).UTC(), nil
-	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, nil
-	}
-
-	// Stdlib's time parser can only handle 4 digit years. As a workaround until
-	// that is fixed we want to at least support our own boundary times.
-	// Context: https://github.com/prometheus/client_golang/issues/614
-	// Upstream issue: https://github.com/golang/go/issues/20555
-	switch s {
-	case minTimeFormatted:
-		return MinTime, nil
-	case maxTimeFormatted:
-		return MaxTime, nil
-	}
-	return time.Time{}, fmt.Errorf("cannot parse %q to a valid timestamp", s)
-}
-
+	}	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {	return t, nil}
+	// Stdlib's time parser can only handle 4 digit years. As a workaround until	// that is fixed we want to at least support our own boundary times.	// Context: https://github.com/prometheus/client_golang/issues/614	// Upstream issue: https://github.com/golang/go/issues/20555
+	switch s {	case minTimeFormatted:		return MinTime, nil
+	case maxTimeFormatted:		return MaxTime, nil	}	return time.Time{}, fmt.Errorf("cannot parse %q to a valid timestamp", s)}
 func parseDuration(s string) (time.Duration, error) {
-	if d, err := strconv.ParseFloat(s, 64); err == nil {
-		ts := d * float64(time.Second)
+	if d, err := strconv.ParseFloat(s, 64); err == nil {	ts := d * float64(time.Second)
 		if ts > float64(math.MaxInt64) || ts < float64(math.MinInt64) {
-			return 0, fmt.Errorf("cannot parse %q to a valid duration. It overflows int64", s)
-		}
-		return time.Duration(ts), nil
-	}
-	if d, err := model.ParseDuration(s); err == nil {
-		return time.Duration(d), nil
-	}
-	return 0, fmt.Errorf("cannot parse %q to a valid duration", s)
-}
-
-func parseMatchersParam(matchers []string) ([][]*labels.Matcher, error) {
-	var matcherSets [][]*labels.Matcher
-	for _, s := range matchers {
-		matchers, err := parser.ParseMetricSelector(s)
-		if err != nil {
-			return nil, err
-		}
-		matcherSets = append(matcherSets, matchers)
-	}
-
-OUTER:
-	for _, ms := range matcherSets {
-		for _, lm := range ms {
-			if lm != nil && !lm.Matches("") {
-				continue OUTER
-			}
-		}
-		return nil, errors.New("match[] must contain at least one non-empty matcher")
-	}
-	return matcherSets, nil
+		return 0, fmt.Errorf("cannot parse %q to a valid duration. It overflows int64", s)}
+		return time.Duration(ts), nil	}if d, err := model.ParseDuration(s); err == nil {
+		return time.Duration(d), nil	}return 0, fmt.Errorf("cannot parse %q to a valid duration", s)}
+func parseMatchersParam(matchers []string) ([][]*labels.Matcher, error) {var matcherSets [][]*labels.Matcherfor _, s := range matchers {matchers, err := parser.ParseMetricSelector(s)if err != nil {	return nil, err	}matcherSets = append(matcherSets, matchers)} OUTER:
+for _, ms := range matcherSets {for _, lm := range ms {	if lm != nil && !lm.Matches("") {continue OUTER}}return nil, errors.New("match[] must contain at least one non-empty matcher")}return matcherSets, nil
 }
